@@ -32,10 +32,12 @@ export const api = {
 export const signalsApi = {
   config: () => unwrap<any>(http.get('/signals/config')),
   llmStatus: () => unwrap<any>(http.get('/signals/llm/status')),
-  analyze: (symbol: string, useLlm?: boolean, timeframe?: string, horizon?: string) =>
-    unwrap<any>(http.post('/signals/analyze', { symbol, useLlm, timeframe, horizon })),
-  generate: (symbol: string, useLlm?: boolean, timeframe?: string, horizon?: string) =>
-    unwrap<{ recommendation: Recommendation }>(http.post('/signals/generate', { symbol, useLlm, timeframe, horizon })),
+  analyze: (symbol: string, useLlm?: boolean, timeframe?: string, horizon?: string, mode?: string) =>
+    unwrap<any>(http.post('/signals/analyze', { symbol, useLlm, timeframe, horizon, mode })),
+  generate: (symbol: string, useLlm?: boolean, timeframe?: string, horizon?: string, mode?: string) =>
+    unwrap<{ recommendation: Recommendation }>(
+      http.post('/signals/generate', { symbol, useLlm, timeframe, horizon, mode }),
+    ),
   list: (params: Record<string, any> = {}) =>
     unwrap<{ items: Recommendation[]; total: number }>(http.get('/signals', { params })),
   detail: (id: string) =>

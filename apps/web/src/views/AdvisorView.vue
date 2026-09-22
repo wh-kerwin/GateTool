@@ -12,6 +12,11 @@
         <a-select v-model="horizon" style="width: 110px" placeholder="验证周期">
           <a-option v-for="h in horizons" :key="h" :value="h">{{ h }}</a-option>
         </a-select>
+        <a-select v-model="mode" style="width: 130px" placeholder="决策模式">
+          <a-option value="llm">LLM 主导</a-option>
+          <a-option value="hybrid">规则 + LLM</a-option>
+          <a-option value="rule">纯规则</a-option>
+        </a-select>
         <a-button type="primary" :loading="generating" @click="generate">生成推荐并入库验证</a-button>
         <a-button :loading="analyzing" @click="analyzeOnly">仅分析（不入库）</a-button>
         <a-switch v-model="useLlm" :disabled="!llmReady">
@@ -36,6 +41,8 @@
         <a-tag :color="dirColor(current.direction)" style="margin-left: 8px">{{ dirLabel(current.direction) }}</a-tag>
         <a-tag>{{ current.symbol.replace('_', '/') }} · {{ current.timeframe }} · 验证周期 {{ current.horizon }}</a-tag>
         <a-tag v-if="current.llmAdjusted" color="purple">LLM 已参与</a-tag>
+        <a-tag v-if="current.mode" color="orange">模式：{{ modeLabel(current.mode) }}</a-tag>
+        <a-tag v-if="current.ruleDirection" size="small">规则参考：{{ dirLabel(current.ruleDirection) }}</a-tag>
       </div>
 
       <a-descriptions :column="4" bordered size="small">
@@ -126,6 +133,23 @@
           </ul>
         </a-col>
       </a-row>
+
+      <div v-if="current.forecasts && Object.keys(current.forecasts).length" class="llm-card">
+        <div class="sub-title">LLM 趋势预测</div>
+        <a-space wrap>
+          <a-tag
+            v-for="(f, key) in current.forecasts"
+            :key="key"
+            size="large"
+            :color="f.bias === 'UP' ? 'green' : f.bias === 'DOWN' ? 'red' : 'gray'"
+          >
+            {{ key }} → {{ f.bias === 'UP' ? '上涨' : f.bias === 'DOWN' ? '下跌' : '震荡' }}
+            <span v-if="f.changePercent != null">
+              {{ f.changePercent > 0 ? '+' : '' }}{{ f.changePercent }}%
+            </span>
+          </a-tag>
+        </a-space>
+      </div>
 
       <div v-if="current.reasons?.llm" class="llm-card">
         <div class="sub-title">LLM 辅助意见</div>
@@ -226,7 +250,17 @@
           <a-slider v-model="form.qualityWeights[k as string]" :min="0" :max="1" :step="0.05" show-input />
         </a-form-item>
         <a-divider>LLM 辅助</a-divider>
-        <a-form-item label="启用 LLM 参与方向评分">
+        <a-form-item label="默认决策模式">
+          <a-select v-model="form.mode">
+            <a-option value="llm">LLM 主导</a-option>
+            <a-option value="hybrid">规则 + LLM</a-option>
+            <a-option value="rule">纯规则</a-option>
+          </a-select>
+        </a-form-item>
+        <a-form-item label="LLM 不可用时回退规则引擎">
+          <a-switch v-model="form.llmFallback" />
+        </a-form-item>
+        <a-form-item label="启用 LLM 参与方向评分（hybrid 模式）">
           <a-switch v-model="form.useLlm" />
         </a-form-item>
         <a-form-item label="LLM 权重">
@@ -254,6 +288,7 @@ const timeframe = ref('1h');
 const horizon = ref('4h');
 const timeframes = ref<string[]>(['15m', '30m', '1h', '4h']);
 const horizons = ref<string[]>(['15m', '30m', '1h', '4h', '8h']);
+const mode = ref('llm');
 const useLlm = ref(false);
 const current = ref<any>(null);
 const items = ref<Recommendation[]>([]);
@@ -291,6 +326,7 @@ const fmt = (v: any, d = 2) => (v == null ? '-' : Number(v).toFixed(d));
 const dirLabel = (d: string) => (d === 'LONG' ? '做多' : d === 'SHORT' ? '做空' : '不建议');
 const dirColor = (d: string) => (d === 'LONG' ? 'green' : d === 'SHORT' ? 'red' : 'gray');
 const biasLabel = (b?: string) => (b === 'LONG' ? '偏多' : b === 'SHORT' ? '偏空' : '中性');
+const modeLabel = (m?: string) => ({ rule: '纯规则', hybrid: '规则 + LLM', llm: 'LLM 主导' } as any)[m || ''] || m;
 const statusLabel = (s: string) =>
   ({ OPEN: '进行中', SUCCESS: '成功', FAIL: '失败', SKIPPED: '未达阈值', EXPIRED: '数据缺失' } as any)[s] || s;
 const resultLabel = (t?: string) =>
@@ -367,6 +403,8 @@ async function loadAll() {
     slAtrMult: s.params.slAtrMult,
     rr: s.params.rr,
     horizon: s.params.horizon,
+    mode: s.params.mode || 'llm',
+    llmFallback: s.params.llmFallback !== false,
     useLlm: Boolean(s.params.useLlm),
     llmWeight: s.params.llmWeight ?? 0.2,
     weights: { ...s.params.weights },
@@ -377,7 +415,7 @@ async function loadAll() {
 async function generate() {
   generating.value = true;
   try {
-    const res = await signalsApi.generate(symbol.value, useLlm.value, timeframe.value, horizon.value);
+    const res = await signalsApi.generate(symbol.value, useLlm.value, timeframe.value, horizon.value, mode.value);
     current.value = res.recommendation;
     Message.success(`推荐已生成：${dirLabel(res.recommendation.direction)}（评分 ${res.recommendation.score}）`);
     loadAll();
@@ -391,7 +429,7 @@ async function generate() {
 async function analyzeOnly() {
   analyzing.value = true;
   try {
-    current.value = await signalsApi.analyze(symbol.value, useLlm.value, timeframe.value, horizon.value);
+    current.value = await signalsApi.analyze(symbol.value, useLlm.value, timeframe.value, horizon.value, mode.value);
     Message.success('分析完成（未入库）');
   } catch (e: any) {
     Message.error(e?.response?.data?.error || e?.message || '分析失败');

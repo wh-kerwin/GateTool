@@ -80,6 +80,21 @@ export async function verifyRecommendation(row) {
     const ts = nowIso();
 
     const detail = { exitPrice, touchedAt, candles: candles.length, stopPct: Number(stopPct.toFixed(4)), leverage };
+
+    // 校验 LLM 给出的周期预测（30m / 1h）是否命中
+    const reasons = row.reasons ? JSON.parse(row.reasons) : null;
+    const forecast = reasons?.forecasts?.[row.horizon];
+    if (forecast?.bias && forecast.bias !== 'FLAT') {
+      const actual = resultPercent > 0 ? 'UP' : resultPercent < 0 ? 'DOWN' : 'FLAT';
+      detail.forecastCheck = {
+        horizon: row.horizon,
+        predicted: forecast.bias,
+        predictedChangePercent: forecast.changePercent ?? null,
+        actual,
+        actualChangePercent: Number(resultPercent.toFixed(4)),
+        hit: forecast.bias === actual,
+      };
+    }
     if (config.llm.enabled) {
       const review = await reviewWithLlm({
         symbol: row.symbol,
@@ -127,7 +142,6 @@ export async function verifyRecommendation(row) {
 
     addEvent(row.id, 'VERIFIED', { resultType, status, resultPercent, pnlPercent, rMultiple });
 
-    const reasons = row.reasons ? JSON.parse(row.reasons) : null;
     if (reasons?.factors) {
       recordFactorOutcome(row.strategy_id, row.direction, reasons.factors, { win, r: rMultiple || 0 });
     }

@@ -105,6 +105,25 @@ LLM（可选）──► { bias, confidence, rationale, risks }
 
 ---
 
+## 2.7 LLM 主导模式（`mode = llm`）
+
+不做规则打分，直接由 LLM 依据 K 线与指标做决策：
+
+```text
+最近 30 根 K 线(OHLCV) + 指标快照 + 资金费率
+        │
+        ▼
+      LLM ──► direction / entryZone / SL / TP / leverage / positionPercent
+              forecasts{30m,1h} / rationale / risks
+        │
+        ▼ 确定性护栏（截断与校验）
+     写入推荐 → 到期回放验证 → 回测 30m/1h 预测是否命中
+```
+
+护栏规则：方向非 `LONG/SHORT/RANGE` → `RANGE`；倍数截断至 `maxLeverage`；做多止损须低于现价、做空须高于现价，否则按 ATR 重算；仓位受 `单笔风险/(止损幅度×倍数)` 与 `maxPositionPercent` 双重约束；每次修正写入 `warnings` 便于追溯。
+
+---
+
 ## 3. 输出格式
 
 ```json

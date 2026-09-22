@@ -52,8 +52,10 @@ async function main() {
     body: JSON.stringify({ params: { minScore: 1, dirThreshold: 0.01 } }),
   });
 
-  const gen = await post('/signals/generate', { symbol: 'BTC_USDT' });
+  const gen = await post('/signals/generate', { symbol: 'BTC_USDT', mode: 'llm', timeframe: '15m', horizon: '30m' });
   const rec = gen.body?.recommendation;
+  ok('LLM 主导模式返回周期预测', Boolean(rec?.reasons?.forecasts) || rec?.reasons?.llmFallback === true,
+    JSON.stringify(rec?.reasons?.forecasts || rec?.reasons?.llm?.reason));
   ok('生成推荐成功', gen.status === 201 && Boolean(rec?.id), `direction=${rec?.direction} score=${rec?.score}`);
 
   if (rec && rec.status === 'OPEN') {
@@ -78,8 +80,11 @@ async function main() {
       r?.mfePercent != null && r?.maePercent != null && r?.rMultiple != null,
       `MFE=${r?.mfePercent} MAE=${r?.maePercent} R=${r?.rMultiple}`);
     ok('事件流含 VERIFIED', (detail.body?.events || []).some((e) => e.type === 'VERIFIED'));
+    const fc = detail.body?.recommendation?.verifiedDetail?.forecastCheck;
+    ok('LLM 周期预测已回测', !fc || typeof fc.hit === 'boolean',
+      fc ? `${fc.horizon} 预测=${fc.predicted} 实际=${fc.actual} 命中=${fc.hit}` : '无预测可回测');
   } else {
-    ok('推荐未达阈值时给出 NO_TRADE', rec?.direction === 'NO_TRADE' && rec?.status === 'SKIPPED');
+    ok('未给出方向时不入库验证', ['NO_TRADE', 'RANGE'].includes(rec?.direction) && rec?.status === 'SKIPPED');
   }
 
   const list = await json('/signals?pageSize=5');

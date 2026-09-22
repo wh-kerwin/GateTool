@@ -28,6 +28,9 @@ export const DEFAULT_PARAMS = {
   sarMaxStep: 0.2,
   useLlm: false,
   llmWeight: 0.2,
+  // 决策模式：rule = 纯规则因子；hybrid = 规则 + LLM 权重调整；llm = LLM 主导（由 LLM 直接给方向与参数）
+  mode: 'llm',
+  llmFallback: true,
   weights: {
     TREND: 0.25,
     MOMENTUM: 0.2,

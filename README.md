@@ -166,7 +166,23 @@ npm run smoke
 - 记录 `MFE`、`MAE`、`R 倍数`，结果经 WebSocket `signal_verified` 推送前端
 - 用户可提交 `adopted / rating / comment` 主观反馈
 
-### 5.4 LLM 辅助判断（可选）
+### 5.4 决策模式（`mode`）
+
+| 模式 | 说明 |
+| --- | --- |
+| `llm` | **LLM 主导**：不看规则因子，LLM 直接依据 K 线与指标给出方向、止损止盈、倍数、仓位与 30m/1h 涨跌预测（当前默认） |
+| `hybrid` | 规则打分 + LLM 倾向按 `llmWeight` 加权融合 |
+| `rule` | 纯规则因子（BOLL/SAR/EMA/RSI/ATR…），完全不调用 LLM |
+
+LLM 主导模式的输入输出：
+
+- 输入：当前价、EMA/RSI/ATR/BOLL/SAR/唐奇安/量能/资金费率 + 最近 30 根主周期 K 线（OHLCV）+ 周期列表
+- 输出（严格 JSON）：`direction(LONG/SHORT/RANGE)`、`confidence`、`entryZone`、`stopLoss`、`takeProfit`、`leverage`、`positionPercent`、`forecasts{30m,1h}`、`rationale`、`risks`
+- **确定性护栏**：方向非取值域内 → RANGE；倍数截断到 `maxLeverage`；止损方向不合理 → 按 ATR 重算；仓位按 `单笔风险/(止损幅度×倍数)` 再截断，保证单笔亏损不超过目标风险；所有修正写入 `warnings`
+- LLM 不可用时（可配 `llmFallback`）回退规则引擎并明确标记
+- 30m/1h 涨跌预测会在到期验证时自动回测，结果写入 `verifiedDetail.forecastCheck`（预测/实际/是否命中）
+
+### 5.5 LLM 配置（可选）
 
 任意 OpenAI 兼容接口，在 `.env` 中配置：
 
@@ -182,12 +198,12 @@ LLM_WEIGHT=0.2
 - 验证完成后：可生成复盘解读（只解释结果，不修改判定）
 - **失败自动降级**：未配置 / 超时 / 返回不可解析时记录原因，按规则结果继续执行
 
-### 5.5 可配置与动态调整
+### 5.6 可配置与动态调整
 
 - 策略参数（阈值、权重、风险、SAR/BOLL 参数、LLM 权重）可在前端"策略配置"中修改，保存即生成新版本，历史推荐仍绑定旧快照
 - 每次验证后累计因子级胜负样本；满足样本量与冷却期后按 `因子胜率 / 整体胜率`（限制 0.5–1.8）调整权重并归一化，新版本表现劣化时自动回滚
 
-### 5.6 相关接口
+### 5.7 相关接口
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |

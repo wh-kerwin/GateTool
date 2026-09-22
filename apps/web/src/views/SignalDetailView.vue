@@ -48,6 +48,29 @@
       <PredictionChart :candles="candles" :entry-price="rec?.referencePrice" :target-price="rec?.takeProfit" />
     </div>
 
+    <div v-if="rec?.reasons?.forecasts || rec?.verifiedDetail?.forecastCheck" class="gpt-card">
+      <div class="gpt-title">LLM 周期趋势预测</div>
+      <a-space wrap>
+        <a-tag
+          v-for="(f, key) in rec?.reasons?.forecasts || {}"
+          :key="key"
+          size="large"
+          :color="f.bias === 'UP' ? 'green' : f.bias === 'DOWN' ? 'red' : 'gray'"
+        >
+          {{ key }}：{{ f.bias === 'UP' ? '上涨' : f.bias === 'DOWN' ? '下跌' : '震荡' }}
+          <span v-if="f.changePercent != null">{{ f.changePercent > 0 ? '+' : '' }}{{ f.changePercent }}%</span>
+        </a-tag>
+      </a-space>
+      <div v-if="rec?.verifiedDetail?.forecastCheck" style="margin-top: 8px">
+        实际（{{ rec.verifiedDetail.forecastCheck.horizon }}）：
+        {{ rec.verifiedDetail.forecastCheck.actual === 'UP' ? '上涨' : '下跌' }}
+        {{ rec.verifiedDetail.forecastCheck.actualChangePercent }}% ·
+        <a-tag :color="rec.verifiedDetail.forecastCheck.hit ? 'green' : 'red'">
+          {{ rec.verifiedDetail.forecastCheck.hit ? '预测命中' : '未命中' }}
+        </a-tag>
+      </div>
+    </div>
+
     <div class="gpt-card">
       <div class="gpt-title">LLM 复盘</div>
       <div v-if="rec?.verifiedDetail?.llmReview?.review" class="llm-text">

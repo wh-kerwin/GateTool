@@ -4,7 +4,7 @@ import { gateRest } from '../../gate/rest.js';
 import { marketService } from '../market.js';
 import { summarize } from '../../indicators.js';
 import { HttpError, logger, newId } from '../../lib/util.js';
-import { analyzeWithLlm } from './llm.js';
+import { analyzeWithLlm, predictWithLlm } from './llm.js';
 import { DEFAULT_STRATEGY_ID, getStrategy } from './strategy.js';
 
 const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
@@ -228,11 +228,41 @@ export async function analyzeSymbol(symbol, strategyId = DEFAULT_STRATEGY_ID, op
   let scored = scoreSignal({ factors, qualityParts, params: p });
   const ruleDirection = scored.direction;
 
-  // LLM 辅助判断：可失败、可关闭，不参与止损止盈与仓位计算
-  // 未显式传参时，跟随全局 LLM_ENABLED（策略层 useLlm 可单独关闭）
+  // 决策模式：rule = 纯规则；hybrid = 规则 + LLM 权重调整；llm = LLM 主导
   const useLlm = options.useLlm ?? p.useLlm ?? config.llm.enabled;
-  let llm = { available: false, reason: useLlm ? 'LLM 未启用' : '本次未请求 LLM' };
-  if (useLlm) {
+  const mode = options.mode || p.mode || (useLlm ? 'hybrid' : 'rule');
+
+  let llm = { available: false, reason: mode === 'rule' ? '规则模式未调用 LLM' : 'LLM 未启用' };
+  let llmPrediction = null;
+  let llmFallback = false;
+
+  if (mode === 'llm') {
+    llmPrediction = await predictWithLlm({
+      symbol,
+      price,
+      timeframe: p.timeframe,
+      candles: primaryCandles,
+      indicators: primary,
+      fundingRate: ticker?.fundingRate ?? null,
+      maxLeverage: p.maxLeverage,
+      horizons: ['30m', '1h'],
+    });
+    llm = llmPrediction;
+    if (llmPrediction.available) {
+      scored = {
+        ...scored,
+        direction: llmPrediction.direction,
+        confidence: llmPrediction.confidence,
+        score: Math.round((llmPrediction.confidence ?? 0) * 100),
+      };
+      scored.llmAdjusted = true;
+    } else if (p.llmFallback !== false) {
+      // LLM 不可用则回退规则结果，并明确标记
+      llmFallback = true;
+    } else {
+      scored = { ...scored, direction: 'NO_TRADE' };
+    }
+  } else if (mode === 'hybrid' && useLlm) {
     llm = await analyzeWithLlm({
       symbol,
       price,
@@ -266,35 +296,70 @@ export async function analyzeSymbol(symbol, strategyId = DEFAULT_STRATEGY_ID, op
 
   const dirSign = scored.direction === 'LONG' ? 1 : scored.direction === 'SHORT' ? -1 : 0;
   const atrAbs = (primary.atrPct / 100) * price;
-  const stopLoss = dirSign ? price * (1 - (dirSign * sizing.stopPct) / 100) : null;
-  const takeProfit = dirSign ? price * (1 + (dirSign * sizing.stopPct * p.rr) / 100) : null;
+
+  let stopLoss = dirSign ? price * (1 - (dirSign * sizing.stopPct) / 100) : null;
+  let takeProfit = dirSign ? price * (1 + (dirSign * sizing.stopPct * p.rr) / 100) : null;
+  let positionPercent = dirSign ? sizing.positionPercent : null;
+  let leverage = dirSign ? sizing.leverage : null;
+
+  // LLM 主导模式：使用 LLM 给出的止损止盈 / 倍数 / 仓位，但用确定性风险护栏截断
+  if (dirSign && llmPrediction?.available) {
+    if (llmPrediction.stopLoss) stopLoss = llmPrediction.stopLoss;
+    if (llmPrediction.takeProfit) takeProfit = llmPrediction.takeProfit;
+    leverage = Math.round(clamp(Number(llmPrediction.leverage) || leverage, 1, p.maxLeverage));
+    const stopPctLlm = Math.abs((price - stopLoss) / price) * 100;
+    const maxMargin = (p.riskPercent / (stopPctLlm * leverage)) * 100;
+    const raw = Number(llmPrediction.positionPercent ?? positionPercent);
+    positionPercent = Number(
+      clamp(raw, p.minPositionPercent, Math.min(p.maxPositionPercent, maxMargin)).toFixed(2),
+    );
+  }
+
+  const finalStopPct = dirSign && stopLoss ? Math.abs((price - stopLoss) / price) * 100 : sizing.stopPct;
+  const actualRisk =
+    dirSign && positionPercent && leverage
+      ? Number(((positionPercent * leverage * finalStopPct) / 100).toFixed(3))
+      : null;
 
   return {
     symbol,
     strategyId: strategy.id,
     strategyVersion: strategy.version,
+    mode,
     timeframe: p.timeframe,
     horizon: p.horizon,
     direction: scored.direction,
     referencePrice: price,
-    entryZone: { low: price - atrAbs * 0.25, high: price + atrAbs * 0.25 },
+    entryZone:
+      llmPrediction?.available && llmPrediction.entryZone
+        ? llmPrediction.entryZone
+        : { low: price - atrAbs * 0.25, high: price + atrAbs * 0.25 },
     stopLoss,
     takeProfit,
-    positionPercent: dirSign ? sizing.positionPercent : null,
-    leverage: dirSign ? sizing.leverage : null,
+    positionPercent,
+    leverage,
     riskPercent: p.riskPercent,
-    actualRiskPercent: dirSign ? sizing.actualRisk : null,
+    actualRiskPercent: actualRisk,
     rr: p.rr,
-    stopPct: sizing.stopPct,
+    stopPct: Number(finalStopPct.toFixed(4)),
     confidence: scored.confidence,
     score: scored.score,
     norm: scored.norm,
     ruleDirection,
     llmAdjusted: Boolean(scored.llmAdjusted),
+    llmFallback,
+    forecasts: llmPrediction?.forecasts || null,
     factors: factors.map((f) => ({ ...f, weight: p.weights[f.code] ?? 0 })),
     qualityParts,
     llm,
-    riskNotes: buildRiskNotes({ primary, sizing, params: p, llm }),
+    riskNotes: buildRiskNotes({
+      primary,
+      sizing,
+      params: p,
+      llm,
+      extra: llmPrediction?.warnings || [],
+      fallback: llmFallback,
+    }),
     indicators: {
       price,
       ema7: primary.ema7,
@@ -316,8 +381,10 @@ export async function analyzeSymbol(symbol, strategyId = DEFAULT_STRATEGY_ID, op
   };
 }
 
-function buildRiskNotes({ primary, sizing, params, llm }) {
+function buildRiskNotes({ primary, sizing, params, llm, extra = [], fallback = false }) {
   const notes = [];
+  if (fallback) notes.push('LLM 不可用，本次结果已回退到规则引擎');
+  for (const w of extra) notes.push(`LLM 参数修正：${w}`);
   if (primary.atrPct > 2) notes.push(`ATR%=${primary.atrPct.toFixed(2)} 波动偏高，仓位已按风险预算压缩`);
   if (primary.boll && primary.boll.bandwidth < 2) notes.push('布林带宽收敛，存在假突破风险');
   if (primary.sar?.reversed) notes.push('SAR 刚刚反转，方向尚不稳定');
@@ -387,9 +454,10 @@ export async function generateRecommendation({
   useLlm,
   timeframe,
   horizon,
+  mode,
 } = {}) {
   if (!config.symbols.includes(symbol)) throw new HttpError(400, `symbol 仅支持 ${config.symbols.join(' / ')}`);
-  const analysis = await analyzeSymbol(symbol, strategyId, { useLlm, timeframe, horizon });
+  const analysis = await analyzeSymbol(symbol, strategyId, { useLlm, timeframe, horizon, mode });
   const id = newId('rec');
   const ts = nowIso();
   const created = new Date();
@@ -429,8 +497,11 @@ export async function generateRecommendation({
       quality: analysis.qualityParts,
       stopPct: analysis.stopPct,
       norm: analysis.norm,
+      mode: analysis.mode,
       ruleDirection: analysis.ruleDirection,
       llm: analysis.llm,
+      forecasts: analysis.forecasts,
+      llmFallback: analysis.llmFallback,
       riskNotes: analysis.riskNotes,
     }),
     JSON.stringify(analysis.indicators),
