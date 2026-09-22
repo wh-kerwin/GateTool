@@ -68,7 +68,10 @@ npm run smoke
 
 ---
 
-## 3. 配置项（`.env`）
+## 3. 配置项
+
+> **推荐做法**：部署后直接在页面「策略配置 → 运行设置」中修改（存数据库，无需环境变量、无需重新部署）。
+> 环境变量仅作为首次启动的初始值，之后会被数据库设置覆盖。
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -246,17 +249,22 @@ Vercel 是无服务器环境（无常驻进程 / 无服务端 WebSocket / 文件
    （也可用 Neon / Supabase 的免费 Postgres，把连接串填到环境变量）
 2. **推送代码**：`git add . && git commit -m "deploy" && git push`
 3. **导入项目**：Vercel → Add New → Project → 选择该仓库（框架选 Other，构建命令会自动读 `vercel.json`）
-4. **配置环境变量**（Project → Settings → Environment Variables）：
+4. **配置环境变量**：**只需要 1 个**（用 Vercel Postgres 时它会把 `DATABASE_URL` 自动注入，那就是 0 个）
 
-   | 变量 | 值 |
-   | --- | --- |
-   | `DATABASE_URL` | Postgres 连接串（必填） |
-   | `LLM_ENABLED` | `true`（要用 LLM 主导模式时） |
-   | `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | 你的 LLM 接口（如 `https://apihub.agnes-ai.com/v1`） |
-   | `GATE_MARKET` | `futures`（默认）或 `spot` |
-   | `SYMBOLS` | `BTC_USDT,ETH_USDT` |
+   | 变量 | 是否必填 | 说明 |
+   | --- | --- | --- |
+   | `DATABASE_URL` | 仅在你不用 Vercel Postgres 时 | Postgres 连接串 |
+   | `APP_CONFIG` | 可选 | 把全部配置压成 1 个变量，JSON 字符串，见下 |
 
-   > 不要提交 `.env`；前端直连 WS 的配置已写在 `apps/web/.env.production`。
+   其余配置（LLM 密钥/模型/地址、行情市场、交易对）**不再需要环境变量**——部署后在页面「策略配置 → 运行设置」里填，保存即写入数据库，`/api/settings` 可查改。首次启动会自动把当前环境变量落库，之后删掉环境变量也照常工作。
+
+   若仍想用环境变量一次性配置（只占 1 个名额）：
+
+   ```env
+   APP_CONFIG={"market":"futures","symbols":["BTC_USDT","ETH_USDT"],"llm":{"enabled":true,"baseUrl":"https://apihub.agnes-ai.com/v1","apiKey":"sk-xxx","model":"agnes-3.0-flash","weight":0.2}}
+   ```
+
+   > 不要提交 `.env`；前端直连 WS 的配置已写在 `apps/web/.env.production`（随代码走，不占环境变量）。
 
 5. **Deploy**：构建会执行 `npm run build`（前端）+ 打包 `api/index.js` 函数
 6. **验证**：访问 `https://<你的域名>/api/health` 返回 `{"ok":true}`；首次请求会自动建表

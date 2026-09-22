@@ -1,11 +1,11 @@
-import { config } from '../config.js';
+import { config, runtime } from '../config.js';
 import { logger, sleep, toNumber } from '../lib/util.js';
 
 /** Gate 公共行情 REST 客户端（只读，不需要 API Key） */
 export class GateRestClient {
   constructor({ restBase, market, timeoutMs } = {}) {
     this.restBase = restBase || config.restBase;
-    this.market = market || config.market;
+    this.market = market || null;
     this.timeoutMs = timeoutMs || config.requestTimeoutMs;
   }
 
@@ -33,8 +33,9 @@ export class GateRestClient {
   }
 
   async getTicker(symbol) {
+    const market = this.market || runtime.market;
     const raw =
-      this.market === 'futures'
+      market === 'futures'
         ? (await this.get('/futures/usdt/tickers', { contract: symbol }))?.[0]
         : (await this.get('/spot/tickers', { currency_pair: symbol }))?.[0];
     if (!raw) throw new Error(`未获取到 ${symbol} 行情`);
@@ -49,7 +50,7 @@ export class GateRestClient {
   }
 
   normalizeTicker(raw, fallbackSymbol) {
-    const isFutures = this.market === 'futures';
+    const isFutures = (this.market || runtime.market) === 'futures';
     const symbol = isFutures ? raw.contract : raw.currency_pair;
     return {
       symbol: symbol || fallbackSymbol,
@@ -81,7 +82,7 @@ export class GateRestClient {
       params.limit = Math.min(1000, Math.max(1, Math.floor(Number(limit))));
     }
     const rows =
-      this.market === 'futures'
+      (this.market || runtime.market) === 'futures'
         ? await this.get('/futures/usdt/candlesticks', { contract: symbol, ...params })
         : await this.get('/spot/candlesticks', { currency_pair: symbol, ...params });
     return (Array.isArray(rows) ? rows : []).map(this.normalizeCandle).sort((a, b) => a.t - b.t);

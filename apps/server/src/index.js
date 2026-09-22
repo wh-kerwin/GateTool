@@ -7,6 +7,7 @@ import { logger } from './lib/util.js';
 import app from './app.js';
 import { marketService } from './services/market.js';
 import { signalEvents } from './services/advisor/verify.js';
+import { loadSettings } from './services/settings.js';
 import { seedStrategies } from './services/advisor/strategy.js';
 import { verificationEvents } from './services/verification.js';
 import { startScheduler } from './scheduler.js';
@@ -34,6 +35,7 @@ signalEvents.on('verified', (recommendation) => broadcast({ type: 'signal_verifi
 
 async function main() {
   await ensureSchema();
+  await loadSettings();
   await seedStrategies();
   await marketService.init();
   const stop = startScheduler();

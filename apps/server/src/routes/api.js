@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { config, DIRECTIONS, TIMEFRAMES, TIMEFRAME_MINUTES } from '../config.js';
 import { marketService } from '../services/market.js';
+import { getSettings, updateSettings } from '../services/settings.js';
 import { DEFAULT_STRATEGY_ID } from '../services/advisor/strategy.js';
 import { maybeAdapt, runSignalVerifications } from '../services/advisor/verify.js';
 import {
@@ -19,6 +20,21 @@ import { HttpError, logger } from '../lib/util.js';
 export const apiRouter = Router();
 
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+/** 运行设置（存数据库，无需环境变量；密钥只返回掩码） */
+apiRouter.get(
+  '/settings',
+  asyncHandler(async (req, res) => {
+    res.json(await getSettings());
+  }),
+);
+
+apiRouter.put(
+  '/settings',
+  asyncHandler(async (req, res) => {
+    res.json(await updateSettings(req.body || {}));
+  }),
+);
 
 apiRouter.get('/health', (req, res) => {
   res.json({ ok: true, time: new Date().toISOString(), status: marketService.getStatus() });

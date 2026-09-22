@@ -26,6 +26,8 @@ export const api = {
     ),
   cancel: (id: string, note?: string) =>
     unwrap<{ prediction: Prediction }>(http.post(`/predictions/${id}/cancel`, { note })),
+  settings: () => unwrap<any>(http.get('/settings')),
+  updateSettings: (patch: Record<string, any>) => unwrap<any>(http.put('/settings', patch)),
   statistics: (params: Record<string, any> = {}) => unwrap<Statistics>(http.get('/statistics', { params })),
 };
 

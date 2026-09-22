@@ -266,6 +266,33 @@
         <a-form-item label="LLM 权重">
           <a-slider v-model="form.llmWeight" :min="0" :max="0.6" :step="0.05" show-input />
         </a-form-item>
+
+        <a-divider>运行设置（存数据库，不需要环境变量）</a-divider>
+        <a-form-item label="行情市场">
+          <a-select v-model="settingsForm.market">
+            <a-option value="futures">合约 USDT 永续</a-option>
+            <a-option value="spot">现货</a-option>
+          </a-select>
+        </a-form-item>
+        <a-form-item label="交易对（逗号分隔）">
+          <a-input v-model="settingsSymbols" placeholder="BTC_USDT,ETH_USDT" />
+        </a-form-item>
+        <a-form-item label="LLM 接口地址">
+          <a-input v-model="settingsForm.llm.baseUrl" placeholder="https://api.openai.com/v1" />
+        </a-form-item>
+        <a-form-item label="LLM 密钥">
+          <a-input-password
+            v-model="settingsForm.llm.apiKey"
+            :placeholder="settingsForm.llm.apiKeyConfigured ? '已配置，留空表示不修改' : 'sk-...'"
+          />
+        </a-form-item>
+        <a-form-item label="模型">
+          <a-input v-model="settingsForm.llm.model" />
+        </a-form-item>
+        <a-form-item label="启用 LLM">
+          <a-switch v-model="settingsForm.llm.enabled" />
+        </a-form-item>
+        <div class="hint">来源：{{ settingsSource === 'database' ? '数据库设置' : '环境变量 / 默认值（保存后写入数据库）' }}</div>
       </a-form>
     </a-drawer>
   </div>
@@ -275,7 +302,7 @@
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { Message } from '@arco-design/web-vue';
-import { signalsApi } from '../api';
+import { api, signalsApi } from '../api';
 import { useAppStore } from '../stores/app';
 import type { Recommendation } from '../types';
 import { formatFullTime, formatPrice } from '../utils/format';
@@ -306,6 +333,10 @@ const llmHint = computed(() => {
   if (!llmStatus.value?.enabled) return llmStatus.value?.configured ? '已配 Key，但 LLM_ENABLED=false' : 'LLM 未启用';
   return '缺少 LLM_API_KEY';
 });
+
+const settingsForm = reactive<any>({ market: 'futures', llm: {} });
+const settingsSymbols = ref('BTC_USDT,ETH_USDT');
+const settingsSource = ref('env/default');
 
 const form = reactive<any>({
   minScore: 55,
@@ -376,13 +407,17 @@ const listColumns = [
 ];
 
 async function loadAll() {
-  const [cfg, llm, list, st, strategies] = await Promise.all([
+  const [cfg, llm, list, st, strategies, settings] = await Promise.all([
     signalsApi.config(),
     signalsApi.llmStatus(),
     signalsApi.list({ pageSize: 15 }),
     signalsApi.statistics(),
     signalsApi.strategies(),
+    api.settings(),
   ]);
+  Object.assign(settingsForm, { market: settings.market, llm: { ...settings.llm } });
+  settingsSymbols.value = (settings.symbols || []).join(',');
+  settingsSource.value = settings.source || 'env/default';
   strategy.value = cfg.strategy;
   llmStatus.value = llm;
   useLlm.value = Boolean(llm?.enabled && llm?.configured);
@@ -464,8 +499,20 @@ async function adapt() {
   }
 }
 
+async function saveSettings() {
+  await api.updateSettings({
+    market: settingsForm.market,
+    symbols: settingsSymbols.value
+      .split(',')
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean),
+    llm: settingsForm.llm,
+  });
+}
+
 async function saveConfig() {
   try {
+    await saveSettings();
     const res = await signalsApi.updateStrategy(strategy.value?.id || 'stg_trend_v1', { ...form });
     strategy.value = res.strategy;
     configVisible.value = false;
