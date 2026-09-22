@@ -1,0 +1,68 @@
+:root {
+  --gpt-bg: #f5f6f8;
+  --gpt-card: #ffffff;
+  --gpt-up: #00b42a;
+  --gpt-down: #f53f3f;
+  --gpt-flat: #86909c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--gpt-bg);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+.gpt-page {
+  padding: 16px;
+}
+
+.gpt-card {
+  background: var(--gpt-card);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.gpt-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 12px;
+}
+
+.gpt-up {
+  color: var(--gpt-up);
+}
+
+.gpt-down {
+  color: var(--gpt-down);
+}
+
+.gpt-flat {
+  color: var(--gpt-flat);
+}
+
+.gpt-mono {
+  font-variant-numeric: tabular-nums;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+}
+
+.gpt-chart {
+  width: 100%;
+  height: 320px;
+}
+
+.gpt-price {
+  font-size: 26px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.gpt-symbol {
+  font-size: 13px;
+  color: #86909c;
+  letter-spacing: 0.5px;
+}

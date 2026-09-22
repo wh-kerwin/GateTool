@@ -1,0 +1,26 @@
+{
+  "name": "gate-prediction-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Gate BTC/ETH 预测记录与自动验证工具",
+  "type": "module",
+  "workspaces": [
+    "apps/server",
+    "apps/web"
+  ],
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "dev": "concurrently -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "npm run dev --workspace apps/server",
+    "dev:web": "npm run dev --workspace apps/web",
+    "build": "npm run build --workspace apps/web",
+    "start": "npm run start --workspace apps/server",
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:advisor": "node scripts/smoke_advisor.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
