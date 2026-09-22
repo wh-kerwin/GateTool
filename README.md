@@ -132,7 +132,8 @@ npm run smoke
 
 ### 5.1 推荐逻辑输入
 
-- 行情：Gate 多周期 K 线（主周期 1h、确认周期 4h、验证回放 1m）+ 实时 ticker + 资金费率
+- 行情：Gate 多周期 K 线（主周期可配 `15m / 30m / 1h / 4h`，确认周期自动高一级，验证回放 1m）+ 实时 ticker + 资金费率
+- 短周期用法：做 15m 趋势时选「主周期 15m + 验证周期 15m」，确认周期自动取 1h
 - 指标：`EMA(7/25/99)`、`RSI(14)`、`ATR(14)`、`BOLL(20,2)`（含 %B 与带宽）、`Parabolic SAR(0.02, 0.2)`、`Donchian(20)`、量能 `VOL/MA20`
 - 方向性因子：`TREND` / `MOMENTUM` / `BOLL` / `SAR` / `BREAKOUT` / `FUNDING`
 - 质量因子（只缩放置信度）：`VOLUME` / `VOLATILITY`

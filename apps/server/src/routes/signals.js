@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { db, nowIso } from '../db.js';
 import { HttpError, logger, newId } from '../lib/util.js';
 import {
+  VALID_HORIZONS,
+  VALID_TIMEFRAMES,
   addEvent,
   analyzeSymbol,
   generateRecommendation,
@@ -30,6 +32,8 @@ signalsRouter.get('/config', (req, res) => {
     defaultStrategyId: DEFAULT_STRATEGY_ID,
     defaultParams: DEFAULT_PARAMS,
     strategy,
+    timeframes: VALID_TIMEFRAMES,
+    horizons: VALID_HORIZONS,
     resultTypes: ['TAKE_PROFIT', 'STOP_LOSS', 'BOTH_SAME_BAR', 'TIMEOUT_WIN', 'TIMEOUT_LOSS', 'EXPIRED'],
     disclaimer: '工具仅输出策略建议与验证结果，不执行任何下单，不构成投资建议。',
   });
@@ -43,21 +47,25 @@ signalsRouter.get('/llm/status', (req, res) => {
 signalsRouter.post(
   '/analyze',
   asyncHandler(async (req, res) => {
-    const { symbol, strategyId, useLlm } = req.body || {};
+    const { symbol, strategyId, useLlm, timeframe, horizon } = req.body || {};
     if (!symbol) throw new HttpError(400, 'symbol 必填');
-    res.json(await analyzeSymbol(String(symbol).toUpperCase(), strategyId || DEFAULT_STRATEGY_ID, { useLlm }));
+    res.json(
+      await analyzeSymbol(String(symbol).toUpperCase(), strategyId || DEFAULT_STRATEGY_ID, { useLlm, timeframe, horizon }),
+    );
   }),
 );
 
 signalsRouter.post(
   '/generate',
   asyncHandler(async (req, res) => {
-    const { symbol, strategyId, useLlm } = req.body || {};
+    const { symbol, strategyId, useLlm, timeframe, horizon } = req.body || {};
     if (!symbol) throw new HttpError(400, 'symbol 必填');
     const rec = await generateRecommendation({
       symbol: String(symbol).toUpperCase(),
       strategyId: strategyId || DEFAULT_STRATEGY_ID,
       useLlm,
+      timeframe,
+      horizon,
     });
     res.status(201).json({ recommendation: rec });
   }),

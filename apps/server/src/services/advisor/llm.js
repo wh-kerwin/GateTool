@@ -21,25 +21,35 @@ export function llmStatus() {
 
 const clamp01 = (v) => (Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0.5);
 
-async function chat(messages) {
+async function chat(messages, attempt = 1) {
   const l = config.llm;
-  const res = await fetch(`${l.baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${l.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: l.model,
-      messages,
-      temperature: l.temperature,
-      max_tokens: l.maxTokens,
-    }),
-    signal: AbortSignal.timeout(l.timeoutMs),
-  });
-  if (!res.ok) throw new Error(`LLM ${res.status} ${res.statusText}`);
-  const data = await res.json();
-  return data?.choices?.[0]?.message?.content || '';
+  try {
+    const res = await fetch(`${l.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${l.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: l.model,
+        messages,
+        temperature: l.temperature,
+        max_tokens: l.maxTokens,
+      }),
+      signal: AbortSignal.timeout(l.timeoutMs),
+    });
+    if (!res.ok) throw new Error(`LLM ${res.status} ${res.statusText}`);
+    const data = await res.json();
+    return data?.choices?.[0]?.message?.content || '';
+  } catch (err) {
+    // 首次调用常见冷启动超时，重试一次后仍失败再降级
+    if (attempt < 2) {
+      logger.warn(`LLM 第 ${attempt} 次调用失败，重试`, String(err?.message || err));
+      await new Promise((r) => setTimeout(r, 500));
+      return chat(messages, attempt + 1);
+    }
+    throw err;
+  }
 }
 
 function extractJson(text) {

@@ -26,7 +26,7 @@
 | 类别 | 字段 | 来源 | 周期 |
 | --- | --- | --- | --- |
 | 价格 | 最新价、24h 高低、涨跌幅 | Gate ticker（WS 优先，REST 兜底） | 实时 |
-| K 线 | O/H/L/C、成交量 | Gate `/futures/usdt/candlesticks` | 15m（执行）、1h（主判定）、4h（趋势确认） |
+| K 线 | O/H/L/C、成交量 | Gate `/futures/usdt/candlesticks` | 主周期可配：`15m / 30m / 1h / 4h`；确认周期自动高一级（`15m、30m → 1h`，`1h → 4h`，`4h → 1d`）；验证回放固定 1m |
 | 合约指标 | funding_rate、mark_price、index_price | Gate futures ticker | 实时 |
 
 ### 2.2 派生指标
@@ -191,6 +191,7 @@ R   = pnlPercent / stopPct                                // 盈亏比（R 倍�
 
 ```json
 {
+  "timeframe": "1h", "horizon": "4h",
   "minScore": 55, "dirThreshold": 0.15,
   "riskPercent": 1.0, "targetVolPct": 1.5,
   "minStopPct": 0.5, "slAtrMult": 1.5, "rr": 2.0,
@@ -204,6 +205,8 @@ R   = pnlPercent / stopPct                                // 盈亏比（R 倍�
 ```
 
 修改参数 → 写入 `strategies` 表并 `version + 1`；历史推荐仍绑定生成时的版本与参数快照，保证可复现。
+
+单次生成可用 `POST /api/signals/generate {symbol, timeframe, horizon, useLlm}` 覆盖默认周期（例如做 15m 趋势：主周期 15m + 验证周期 15m）。
 
 ### 5.2 可追溯
 

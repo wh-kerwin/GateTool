@@ -9,6 +9,13 @@ import { DEFAULT_STRATEGY_ID, getStrategy } from './strategy.js';
 
 const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
 
+/** 支持的推荐周期与验证周期 */
+export const VALID_TIMEFRAMES = ['15m', '30m', '1h', '4h'];
+export const VALID_HORIZONS = ['15m', '30m', '1h', '4h', '8h'];
+
+/** 主周期 → 确认周期（高一级用于趋势确认） */
+const CONFIRM_TIMEFRAME = { '15m': '1h', '30m': '1h', '1h': '4h', '4h': '1d' };
+
 /** 方向性因子：value ∈ [-1,1]，正数偏多 */
 function buildFactors(primary, confirm, fundingRate) {
   const factors = [];
@@ -184,7 +191,19 @@ export function sizePosition({ price, atrPct, params }) {
 export async function analyzeSymbol(symbol, strategyId = DEFAULT_STRATEGY_ID, options = {}) {
   const strategy = getStrategy(strategyId);
   if (!strategy) throw new Error('策略不存在');
-  const p = strategy.params;
+  if (options.timeframe && !VALID_TIMEFRAMES.includes(options.timeframe)) {
+    throw new HttpError(400, `timeframe 仅支持 ${VALID_TIMEFRAMES.join(' / ')}`);
+  }
+  if (options.horizon && !VALID_HORIZONS.includes(options.horizon)) {
+    throw new HttpError(400, `horizon 仅支持 ${VALID_HORIZONS.join(' / ')}`);
+  }
+  const timeframe = options.timeframe || strategy.params.timeframe;
+  const p = {
+    ...strategy.params,
+    timeframe,
+    horizon: options.horizon || strategy.params.horizon,
+    confirmTimeframe: CONFIRM_TIMEFRAME[timeframe] || strategy.params.confirmTimeframe,
+  };
 
   const [primaryCandles, confirmCandles] = await Promise.all([
     gateRest.getCandles({ symbol, interval: p.timeframe, limit: 200 }),
@@ -210,7 +229,8 @@ export async function analyzeSymbol(symbol, strategyId = DEFAULT_STRATEGY_ID, op
   const ruleDirection = scored.direction;
 
   // LLM 辅助判断：可失败、可关闭，不参与止损止盈与仓位计算
-  const useLlm = options.useLlm ?? p.useLlm ?? false;
+  // 未显式传参时，跟随全局 LLM_ENABLED（策略层 useLlm 可单独关闭）
+  const useLlm = options.useLlm ?? p.useLlm ?? config.llm.enabled;
   let llm = { available: false, reason: useLlm ? 'LLM 未启用' : '本次未请求 LLM' };
   if (useLlm) {
     llm = await analyzeWithLlm({
@@ -360,9 +380,16 @@ export function rowToRecommendation(row) {
   };
 }
 
-export async function generateRecommendation({ symbol, strategyId = DEFAULT_STRATEGY_ID, auto = false, useLlm } = {}) {
+export async function generateRecommendation({
+  symbol,
+  strategyId = DEFAULT_STRATEGY_ID,
+  auto = false,
+  useLlm,
+  timeframe,
+  horizon,
+} = {}) {
   if (!config.symbols.includes(symbol)) throw new HttpError(400, `symbol 仅支持 ${config.symbols.join(' / ')}`);
-  const analysis = await analyzeSymbol(symbol, strategyId, { useLlm });
+  const analysis = await analyzeSymbol(symbol, strategyId, { useLlm, timeframe, horizon });
   const id = newId('rec');
   const ts = nowIso();
   const created = new Date();

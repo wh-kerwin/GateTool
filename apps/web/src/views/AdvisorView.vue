@@ -6,6 +6,12 @@
         <a-radio-group v-model="symbol" type="button">
           <a-radio v-for="s in symbols" :key="s" :value="s">{{ s.replace('_', '/') }}</a-radio>
         </a-radio-group>
+        <a-select v-model="timeframe" style="width: 100px" placeholder="主周期">
+          <a-option v-for="t in timeframes" :key="t" :value="t">{{ t }}</a-option>
+        </a-select>
+        <a-select v-model="horizon" style="width: 110px" placeholder="验证周期">
+          <a-option v-for="h in horizons" :key="h" :value="h">{{ h }}</a-option>
+        </a-select>
         <a-button type="primary" :loading="generating" @click="generate">生成推荐并入库验证</a-button>
         <a-button :loading="analyzing" @click="analyzeOnly">仅分析（不入库）</a-button>
         <a-switch v-model="useLlm" :disabled="!llmReady">
@@ -13,7 +19,7 @@
           <template #unchecked>纯规则</template>
         </a-switch>
         <a-tag :color="llmReady ? 'green' : 'gray'">
-          {{ llmReady ? `LLM ${llmStatus.model}` : 'LLM 未启用' }}
+          {{ llmReady ? `LLM ${llmStatus.model}` : llmHint }}
         </a-tag>
         <a-tag color="arcoblue">策略 v{{ strategy?.version ?? '-' }}</a-tag>
         <a-button size="small" @click="configVisible = true">策略配置</a-button>
@@ -201,11 +207,14 @@
         <a-form-item label="盈亏比">
           <a-input-number v-model="form.rr" :min="1" :max="5" :step="0.5" />
         </a-form-item>
-        <a-form-item label="验证周期">
+        <a-form-item label="默认主周期（K线判定周期）">
+          <a-select v-model="form.timeframe">
+            <a-option v-for="t in timeframes" :key="t" :value="t">{{ t }}</a-option>
+          </a-select>
+        </a-form-item>
+        <a-form-item label="默认验证周期">
           <a-select v-model="form.horizon">
-            <a-option value="1h">1h</a-option>
-            <a-option value="4h">4h</a-option>
-            <a-option value="8h">8h</a-option>
+            <a-option v-for="h in horizons" :key="h" :value="h">{{ h }}</a-option>
           </a-select>
         </a-form-item>
         <a-divider>方向因子权重（保存后归一化）</a-divider>
@@ -241,6 +250,10 @@ const store = useAppStore();
 const router = useRouter();
 
 const symbol = ref('BTC_USDT');
+const timeframe = ref('1h');
+const horizon = ref('4h');
+const timeframes = ref<string[]>(['15m', '30m', '1h', '4h']);
+const horizons = ref<string[]>(['15m', '30m', '1h', '4h', '8h']);
 const useLlm = ref(false);
 const current = ref<any>(null);
 const items = ref<Recommendation[]>([]);
@@ -254,6 +267,10 @@ const adapting = ref(false);
 
 const symbols = computed(() => store.symbols);
 const llmReady = computed(() => Boolean(llmStatus.value?.enabled && llmStatus.value?.configured));
+const llmHint = computed(() => {
+  if (!llmStatus.value?.enabled) return llmStatus.value?.configured ? '已配 Key，但 LLM_ENABLED=false' : 'LLM 未启用';
+  return '缺少 LLM_API_KEY';
+});
 
 const form = reactive<any>({
   minScore: 55,
@@ -336,7 +353,13 @@ async function loadAll() {
   items.value = list.items;
   stats.value = st;
   const s = strategies.items[0] || cfg.strategy;
+  if (cfg.timeframes?.length) timeframes.value = cfg.timeframes;
+  if (cfg.horizons?.length) horizons.value = cfg.horizons;
+  timeframe.value = s.params.timeframe || '1h';
+  horizon.value = s.params.horizon || '4h';
   Object.assign(form, {
+    timeframe: timeframe.value,
+    horizon: horizon.value,
     minScore: s.params.minScore,
     riskPercent: s.params.riskPercent,
     maxLeverage: s.params.maxLeverage,
@@ -354,7 +377,7 @@ async function loadAll() {
 async function generate() {
   generating.value = true;
   try {
-    const res = await signalsApi.generate(symbol.value, useLlm.value);
+    const res = await signalsApi.generate(symbol.value, useLlm.value, timeframe.value, horizon.value);
     current.value = res.recommendation;
     Message.success(`推荐已生成：${dirLabel(res.recommendation.direction)}（评分 ${res.recommendation.score}）`);
     loadAll();
@@ -368,7 +391,7 @@ async function generate() {
 async function analyzeOnly() {
   analyzing.value = true;
   try {
-    current.value = await signalsApi.analyze(symbol.value, useLlm.value);
+    current.value = await signalsApi.analyze(symbol.value, useLlm.value, timeframe.value, horizon.value);
     Message.success('分析完成（未入库）');
   } catch (e: any) {
     Message.error(e?.response?.data?.error || e?.message || '分析失败');

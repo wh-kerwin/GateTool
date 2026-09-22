@@ -1,3 +1,4 @@
+import { config } from '../../config.js';
 import { db, nowIso } from '../../db.js';
 import { newId } from '../../lib/util.js';
 
@@ -61,16 +62,24 @@ export function seedStrategies() {
     db.prepare(
       `INSERT INTO strategies (id, name, version, params, previous, is_active, created_at, updated_at)
        VALUES (?, ?, 1, ?, NULL, 1, ?, ?)`,
-    ).run(DEFAULT_STRATEGY_ID, '趋势跟随 V1', JSON.stringify(DEFAULT_PARAMS), ts, ts);
+    ).run(
+      DEFAULT_STRATEGY_ID,
+      '趋势跟随 V1',
+      JSON.stringify({ ...DEFAULT_PARAMS, useLlm: config.llm.enabled }),
+      ts,
+      ts,
+    );
     return;
   }
   // 升级已存在策略：补齐新增参数与因子权重（历史版本引用旧快照，不受影响）
   const current = getStrategy(DEFAULT_STRATEGY_ID);
   const patch = {};
   for (const [k, v] of Object.entries(DEFAULT_PARAMS)) {
-    if (k === 'weights' || k === 'qualityWeights') continue;
+    if (k === 'weights' || k === 'qualityWeights' || k === 'useLlm') continue;
     if (current.params[k] === undefined) patch[k] = v;
   }
+  // 全局开启 LLM 时，同步打开策略层开关（前端与接口仍可逐次覆盖）
+  if (config.llm.enabled && current.params.useLlm === false) patch.useLlm = true;
   const weights = { ...current.params.weights };
   for (const [k, v] of Object.entries(DEFAULT_PARAMS.weights)) if (weights[k] === undefined) weights[k] = v;
   const qualityWeights = { ...current.params.qualityWeights };
