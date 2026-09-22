@@ -49,6 +49,23 @@ class MarketService extends EventEmitter {
     this.emit('ticker', ticker);
   }
 
+  /** 无服务器环境下的按需取价：只走 REST，不启动 WebSocket */
+  async ensureFresh(maxAgeMs = 10000) {
+    const stale = config.symbols.filter((s) => {
+      const t = this.cache.get(s);
+      return !t || Date.now() - new Date(t.timestamp).getTime() > maxAgeMs;
+    });
+    if (!stale.length) return;
+    await Promise.all(
+      stale.map((s) =>
+        gateRest
+          .getTicker(s)
+          .then((t) => this.upsert(t))
+          .catch((err) => logger.warn(`按需刷新 ${s} 失败`, String(err?.message || err))),
+      ),
+    );
+  }
+
   getTicker(symbol) {
     const t = this.cache.get(symbol);
     if (!t) return null;

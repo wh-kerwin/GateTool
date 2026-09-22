@@ -9,7 +9,7 @@ const SORT_COLUMNS = {
   createdAt: 'created_at',
 };
 
-export function listPredictions(filters = {}) {
+export async function listPredictions(filters = {}) {
   const where = [];
   const args = [];
   const push = (sql, value) => {
@@ -34,17 +34,19 @@ export function listPredictions(filters = {}) {
   const page = Math.max(1, Number(filters.page) || 1);
   const pageSize = Math.min(200, Math.max(1, Number(filters.pageSize) || 20));
 
-  const total = db.prepare(`SELECT COUNT(*) AS c FROM predictions ${whereSql}`).get(...args).c;
+  const countRow = await db.get(`SELECT COUNT(*) AS c FROM predictions ${whereSql}`, ...args);
+  const total = Number(countRow?.c ?? 0);
   const orderBy = SORT_COLUMNS[filters.sortBy] || 'prediction_time';
   const direction = String(filters.order || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
 
-  const rows = db
-    .prepare(
-      `SELECT * FROM predictions ${whereSql}
+  const rows = await db.all(
+    `SELECT * FROM predictions ${whereSql}
        ORDER BY ${orderBy} ${direction}
        LIMIT ? OFFSET ?`,
-    )
-    .all(...args, pageSize, (page - 1) * pageSize);
+    ...args,
+    pageSize,
+    (page - 1) * pageSize,
+  );
 
   return {
     items: rows.map(toPrediction),
@@ -55,17 +57,17 @@ export function listPredictions(filters = {}) {
   };
 }
 
-export function getPrediction(id) {
-  const row = db.prepare('SELECT * FROM predictions WHERE id = ?').get(id);
+export async function getPrediction(id) {
+  const row = await db.get('SELECT * FROM predictions WHERE id = ?', id);
   return toPrediction(row);
 }
 
-export function getMarketSnapshot(predictionId) {
-  return db.prepare('SELECT * FROM market_snapshots WHERE prediction_id = ?').get(predictionId) || null;
+export async function getMarketSnapshot(predictionId) {
+  return await db.get('SELECT * FROM market_snapshots WHERE prediction_id = ?', predictionId) || null;
 }
 
-export function getVerificationSnapshot(predictionId) {
-  return db.prepare('SELECT * FROM verification_snapshots WHERE prediction_id = ?').get(predictionId) || null;
+export async function getVerificationSnapshot(predictionId) {
+  return await db.get('SELECT * FROM verification_snapshots WHERE prediction_id = ?', predictionId) || null;
 }
 
 function validateInput(input = {}) {
@@ -111,12 +113,11 @@ export async function createPrediction(input = {}, userId = config.defaultUserId
   const id = newId('prd');
   const ts = nowIso();
 
-  db.prepare(
+  await db.run(
     `INSERT INTO predictions (
       id, user_id, symbol, direction, entry_price, target_price, range_percent, timeframe,
       prediction_time, verification_time, reason, status, retry_count, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0, ?, ?)`,
-  ).run(
     id,
     userId,
     v.symbol,
@@ -132,10 +133,9 @@ export async function createPrediction(input = {}, userId = config.defaultUserId
     ts,
   );
 
-  db.prepare(
+  await db.run(
     `INSERT INTO market_snapshots (id, prediction_id, symbol, price, volume, open, high, low, source, timestamp, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
     newId('snp'),
     id,
     snapshot.symbol,
@@ -149,48 +149,47 @@ export async function createPrediction(input = {}, userId = config.defaultUserId
     ts,
   );
 
-  const prediction = getPrediction(id);
-  return { prediction, snapshot, conflicts: findConflicts(prediction) };
+  const prediction = await getPrediction(id);
+  return { prediction, snapshot, conflicts: await findConflicts(prediction) };
 }
 
 /** 同标的、同窗口内方向冲突的待验证预测（仅提示，不阻断） */
-function findConflicts(prediction) {
-  return db
-    .prepare(
-      `SELECT * FROM predictions
+async function findConflicts(prediction) {
+  const rows = await db.all(
+    `SELECT * FROM predictions
        WHERE status = 'PENDING'
          AND id != ?
          AND symbol = ?
          AND direction != ?
          AND verification_time > ?
          AND prediction_time < ?`,
-    )
-    .all(
-      prediction.id,
-      prediction.symbol,
-      prediction.direction,
-      prediction.predictionTime,
-      prediction.verificationTime,
-    )
-    .map(toPrediction);
+    prediction.id,
+    prediction.symbol,
+    prediction.direction,
+    prediction.predictionTime,
+    prediction.verificationTime,
+  );
+  return rows.map(toPrediction);
 }
 
-export function cancelPrediction(id, note = '用户作废') {
-  const existing = getPrediction(id);
+export async function cancelPrediction(id, note = '用户作废') {
+  const existing = await getPrediction(id);
   if (!existing) throw new HttpError(404, '预测不存在');
   if (existing.status !== 'PENDING') throw new HttpError(409, '仅待验证的预测可以作废');
-  db.prepare(
+  await db.run(
     `UPDATE predictions SET status = 'EXPIRED', cancel_note = ?, updated_at = ? WHERE id = ?`,
-  ).run(note, nowIso(), id);
+    note,
+    nowIso(),
+    id,
+  );
   return getPrediction(id);
 }
 
-export function listPending(limit = 50) {
-  return db
-    .prepare(
-      `SELECT * FROM predictions WHERE status = 'PENDING'
+export async function listPending(limit = 50) {
+  const rows = await db.all(
+    `SELECT * FROM predictions WHERE status = 'PENDING'
        ORDER BY verification_time ASC LIMIT ?`,
-    )
-    .all(limit)
-    .map(toPrediction);
+    limit,
+  );
+  return rows.map(toPrediction);
 }

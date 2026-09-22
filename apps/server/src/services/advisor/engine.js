@@ -189,7 +189,7 @@ export function sizePosition({ price, atrPct, params }) {
 }
 
 export async function analyzeSymbol(symbol, strategyId = DEFAULT_STRATEGY_ID, options = {}) {
-  const strategy = getStrategy(strategyId);
+  const strategy = await getStrategy(strategyId);
   if (!strategy) throw new Error('策略不存在');
   if (options.timeframe && !VALID_TIMEFRAMES.includes(options.timeframe)) {
     throw new HttpError(400, `timeframe 仅支持 ${VALID_TIMEFRAMES.join(' / ')}`);
@@ -465,14 +465,13 @@ export async function generateRecommendation({
   const expires = new Date(created.getTime() + horizonMinutes * 60000);
   const status = analysis.direction === 'NO_TRADE' ? 'SKIPPED' : 'OPEN';
 
-  db.prepare(
+  await db.run(
     `INSERT INTO recommendations (
       id, symbol, strategy_id, strategy_version, direction, timeframe, horizon,
       reference_price, entry_low, entry_high, stop_loss, take_profit, position_percent,
       leverage, risk_percent, actual_risk_percent, rr, confidence, score,
       reasons, indicators, params, status, retry_count, created_at, expires_at, updated_at
     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?)`,
-  ).run(
     id,
     analysis.symbol,
     analysis.strategyId,
@@ -512,25 +511,30 @@ export async function generateRecommendation({
     ts,
   );
 
-  addEvent(id, 'CREATED', { auto, direction: analysis.direction, score: analysis.score });
+  await addEvent(id, 'CREATED', { auto, direction: analysis.direction, score: analysis.score });
   logger.info(
     `生成推荐 ${analysis.symbol} ${analysis.direction} score=${analysis.score} 仓位=${analysis.positionPercent}% 倍数=${analysis.leverage}x`,
   );
   return getRecommendation(id);
 }
 
-export function addEvent(recommendationId, type, payload = {}) {
-  db.prepare(
+export async function addEvent(recommendationId, type, payload = {}) {
+  await db.run(
     `INSERT INTO recommendation_events (id, recommendation_id, type, payload, created_at)
      VALUES (?, ?, ?, ?, ?)`,
-  ).run(newId('evt'), recommendationId, type, JSON.stringify(payload), nowIso());
+    newId('evt'),
+    recommendationId,
+    type,
+    JSON.stringify(payload),
+    nowIso(),
+  );
 }
 
-export function getRecommendation(id) {
-  return rowToRecommendation(db.prepare('SELECT * FROM recommendations WHERE id = ?').get(id));
+export async function getRecommendation(id) {
+  return rowToRecommendation(await db.get('SELECT * FROM recommendations WHERE id = ?', id));
 }
 
-export function listRecommendations(filters = {}) {
+export async function listRecommendations(filters = {}) {
   const where = [];
   const args = [];
   if (filters.symbol) (where.push('symbol = ?'), args.push(filters.symbol));
@@ -544,16 +548,26 @@ export function listRecommendations(filters = {}) {
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const page = Math.max(1, Number(filters.page) || 1);
   const pageSize = Math.min(200, Math.max(1, Number(filters.pageSize) || 20));
-  const total = db.prepare(`SELECT COUNT(*) AS c FROM recommendations ${whereSql}`).get(...args).c;
-  const rows = db
-    .prepare(`SELECT * FROM recommendations ${whereSql} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
-    .all(...args, pageSize, (page - 1) * pageSize);
+  const countRow = await db.get(`SELECT COUNT(*) AS c FROM recommendations ${whereSql}`, ...args);
+  const total = Number(countRow?.c ?? 0);
+  const rows = await db.all(
+    `SELECT * FROM recommendations ${whereSql} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+    ...args,
+    pageSize,
+    (page - 1) * pageSize,
+  );
   return { items: rows.map(rowToRecommendation), total, page, pageSize, totalPages: Math.max(1, Math.ceil(total / pageSize)) };
 }
 
-export function listEvents(recommendationId) {
-  return db
-    .prepare('SELECT * FROM recommendation_events WHERE recommendation_id = ? ORDER BY created_at ASC')
-    .all(recommendationId)
-    .map((r) => ({ id: r.id, type: r.type, payload: r.payload ? JSON.parse(r.payload) : null, createdAt: r.created_at }));
+export async function listEvents(recommendationId) {
+  const rows = await db.all(
+    'SELECT * FROM recommendation_events WHERE recommendation_id = ? ORDER BY created_at ASC',
+    recommendationId,
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    type: r.type,
+    payload: r.payload ? JSON.parse(r.payload) : null,
+    createdAt: r.created_at,
+  }));
 }

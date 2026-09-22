@@ -58,14 +58,13 @@ function rowToStrategy(row) {
   };
 }
 
-export function seedStrategies() {
-  const exists = db.prepare('SELECT id FROM strategies WHERE id = ?').get(DEFAULT_STRATEGY_ID);
+export async function seedStrategies() {
+  const exists = await db.get('SELECT id FROM strategies WHERE id = ?', DEFAULT_STRATEGY_ID);
   if (!exists) {
     const ts = nowIso();
-    db.prepare(
+    await db.run(
       `INSERT INTO strategies (id, name, version, params, previous, is_active, created_at, updated_at)
        VALUES (?, ?, 1, ?, NULL, 1, ?, ?)`,
-    ).run(
       DEFAULT_STRATEGY_ID,
       '趋势跟随 V1',
       JSON.stringify({ ...DEFAULT_PARAMS, useLlm: config.llm.enabled }),
@@ -75,7 +74,7 @@ export function seedStrategies() {
     return;
   }
   // 升级已存在策略：补齐新增参数与因子权重（历史版本引用旧快照，不受影响）
-  const current = getStrategy(DEFAULT_STRATEGY_ID);
+  const current = await getStrategy(DEFAULT_STRATEGY_ID);
   const patch = {};
   for (const [k, v] of Object.entries(DEFAULT_PARAMS)) {
     if (k === 'weights' || k === 'qualityWeights' || k === 'useLlm') continue;
@@ -91,21 +90,22 @@ export function seedStrategies() {
     Object.keys(weights).length !== Object.keys(current.params.weights).length ||
     Object.keys(qualityWeights).length !== Object.keys(current.params.qualityWeights).length;
   if (Object.keys(patch).length || weightsChanged) {
-    updateStrategy(DEFAULT_STRATEGY_ID, { ...patch, weights, qualityWeights }, { bumpVersion: false });
+    await updateStrategy(DEFAULT_STRATEGY_ID, { ...patch, weights, qualityWeights }, { bumpVersion: false });
   }
 }
 
-export function getStrategy(id = DEFAULT_STRATEGY_ID) {
-  return rowToStrategy(db.prepare('SELECT * FROM strategies WHERE id = ?').get(id));
+export async function getStrategy(id = DEFAULT_STRATEGY_ID) {
+  return rowToStrategy(await db.get('SELECT * FROM strategies WHERE id = ?', id));
 }
 
-export function listStrategies() {
-  return db.prepare('SELECT * FROM strategies ORDER BY updated_at DESC').all().map(rowToStrategy);
+export async function listStrategies() {
+  const rows = await db.all('SELECT * FROM strategies ORDER BY updated_at DESC');
+  return rows.map(rowToStrategy);
 }
 
 /** 更新参数：合并后写入新版本，保留上一版本用于回滚 */
-export function updateStrategy(id, patch = {}, { bumpVersion = true, adaptedAt = null } = {}) {
-  const current = getStrategy(id);
+export async function updateStrategy(id, patch = {}, { bumpVersion = true, adaptedAt = null } = {}) {
+  const current = await getStrategy(id);
   if (!current) throw new Error('策略不存在');
   const merged = {
     ...current.params,
@@ -117,9 +117,14 @@ export function updateStrategy(id, patch = {}, { bumpVersion = true, adaptedAt =
   if (adaptedAt) merged.adaptedAt = adaptedAt;
   const version = bumpVersion ? current.version + 1 : current.version;
   const ts = nowIso();
-  db.prepare(
+  await db.run(
     `UPDATE strategies SET version = ?, params = ?, previous = ?, updated_at = ? WHERE id = ?`,
-  ).run(version, JSON.stringify(merged), JSON.stringify(current.params), ts, id);
+    version,
+    JSON.stringify(merged),
+    JSON.stringify(current.params),
+    ts,
+    id,
+  );
   return getStrategy(id);
 }
 
@@ -129,24 +134,25 @@ export function normalizeWeights(weights) {
   return Object.fromEntries(entries.map(([k, v]) => [k, Number((v / sum).toFixed(4))]));
 }
 
-export function versionStats(strategyId, version, limit = 100) {
-  return db
-    .prepare(
-      `SELECT status, r_multiple FROM recommendations
+export async function versionStats(strategyId, version, limit = 100) {
+  return db.all(
+    `SELECT status, r_multiple FROM recommendations
        WHERE strategy_id = ? AND strategy_version = ? AND status IN ('SUCCESS','FAIL')
        ORDER BY verified_at DESC LIMIT ?`,
-    )
-    .all(strategyId, version, limit);
+    strategyId,
+    version,
+    limit,
+  );
 }
 
-export function overallStats(strategyId, limit = 100) {
-  const rows = db
-    .prepare(
-      `SELECT status, r_multiple FROM recommendations
+export async function overallStats(strategyId, limit = 100) {
+  const rows = await db.all(
+    `SELECT status, r_multiple FROM recommendations
        WHERE strategy_id = ? AND status IN ('SUCCESS','FAIL')
        ORDER BY verified_at DESC LIMIT ?`,
-    )
-    .all(strategyId, limit);
+    strategyId,
+    limit,
+  );
   const total = rows.length;
   const wins = rows.filter((r) => r.status === 'SUCCESS').length;
   return {
@@ -159,40 +165,38 @@ export function overallStats(strategyId, limit = 100) {
 }
 
 /** 记录因子级表现：仅统计"该因子主导且方向与信号一致"的样本 */
-export function recordFactorOutcome(strategyId, direction, factors, { win, r }) {
-  const upsert = db.prepare(
-    `INSERT INTO factor_stats (id, strategy_id, factor, direction, samples, wins, losses, r_sum, updated_at)
+export async function recordFactorOutcome(strategyId, direction, factors, { win, r }) {
+  const sql = `INSERT INTO factor_stats (id, strategy_id, factor, direction, samples, wins, losses, r_sum, updated_at)
      VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)
      ON CONFLICT (strategy_id, factor, direction) DO UPDATE SET
-       samples = samples + 1,
-       wins = wins + excluded.wins,
-       losses = losses + excluded.losses,
-       r_sum = r_sum + excluded.r_sum,
-       updated_at = excluded.updated_at`,
-  );
+       samples = factor_stats.samples + 1,
+       wins = factor_stats.wins + excluded.wins,
+       losses = factor_stats.losses + excluded.losses,
+       r_sum = factor_stats.r_sum + excluded.r_sum,
+       updated_at = excluded.updated_at`;
   const ts = nowIso();
   for (const f of factors) {
     if (!DIRECTIONAL_FACTORS.includes(f.code)) continue;
     const aligned = direction === 'LONG' ? f.value > 0 : f.value < 0;
     if (!aligned || Math.abs(f.value) < 0.3) continue;
-    upsert.run(newId('fst'), strategyId, f.code, direction, win ? 1 : 0, win ? 0 : 1, r || 0, ts);
+    await db.run(sql, newId('fst'), strategyId, f.code, direction, win ? 1 : 0, win ? 0 : 1, r || 0, ts);
   }
 }
 
-export function getFactorStats(strategyId) {
-  return db.prepare('SELECT * FROM factor_stats WHERE strategy_id = ?').all(strategyId);
+export async function getFactorStats(strategyId) {
+  return db.all('SELECT * FROM factor_stats WHERE strategy_id = ?', strategyId);
 }
 
 /**
  * 权重自适应：因子胜率相对整体胜率的比值作为乘子（限制在 [0.5, 1.8]），归一化后生成新版本。
  * 返回 { changed, from, to, reason }
  */
-export function adaptWeights(id = DEFAULT_STRATEGY_ID, { force = false } = {}) {
-  const strategy = getStrategy(id);
+export async function adaptWeights(id = DEFAULT_STRATEGY_ID, { force = false } = {}) {
+  const strategy = await getStrategy(id);
   if (!strategy) throw new Error('策略不存在');
   const p = strategy.params;
-  const overall = overallStats(id);
-  const stats = getFactorStats(id);
+  const overall = await overallStats(id);
+  const stats = await getFactorStats(id);
   const byFactor = new Map(stats.map((s) => [s.factor, s]));
 
   if (!force) {
@@ -231,24 +235,25 @@ export function adaptWeights(id = DEFAULT_STRATEGY_ID, { force = false } = {}) {
   if (!changedEnough) return { changed: false, reason: '权重变化低于阈值（<0.01）', details };
 
   const previousVersion = strategy.version;
-  updateStrategy(id, { weights: normalized }, { bumpVersion: true, adaptedAt: new Date().toISOString() });
+  await updateStrategy(id, { weights: normalized }, { bumpVersion: true, adaptedAt: new Date().toISOString() });
 
-  const rollback = p.autoRollback ? maybeRollback(id, previousVersion) : null;
-  return { changed: true, from, to: normalized, details, rollback, version: getStrategy(id).version };
+  const rollback = p.autoRollback ? await maybeRollback(id, previousVersion) : null;
+  const latest = await getStrategy(id);
+  return { changed: true, from, to: normalized, details, rollback, version: latest.version };
 }
 
 /** 若新版本表现不如上一版本，且样本达标，则回滚权重 */
-export function maybeRollback(id, previousVersion) {
-  const current = getStrategy(id);
-  const cur = versionStats(id, current.version, 30);
-  const prev = versionStats(id, previousVersion, 30);
+export async function maybeRollback(id, previousVersion) {
+  const current = await getStrategy(id);
+  const cur = await versionStats(id, current.version, 30);
+  const prev = await versionStats(id, previousVersion, 30);
   const rate = (rows) => (rows.length ? rows.filter((r) => r.status === 'SUCCESS').length / rows.length : null);
   const curRate = rate(cur);
   const prevRate = rate(prev);
   if (cur.length >= 10 && prev.length >= 10 && curRate != null && prevRate != null && curRate < prevRate) {
-    const prevStrategy = db.prepare('SELECT previous FROM strategies WHERE id = ?').get(id);
+    const prevStrategy = await db.get('SELECT previous FROM strategies WHERE id = ?', id);
     const lastWeights = prevStrategy?.previous ? JSON.parse(prevStrategy.previous).weights : DEFAULT_PARAMS.weights;
-    updateStrategy(id, { weights: lastWeights }, { bumpVersion: true });
+    await updateStrategy(id, { weights: lastWeights }, { bumpVersion: true });
     return { rolledBack: true, fromVersion: current.version, curRate, prevRate };
   }
   return { rolledBack: false, curRate, prevRate };

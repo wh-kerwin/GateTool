@@ -119,14 +119,13 @@ export async function verifyRecommendation(row) {
       if (review.available) detail.llmReview = review;
     }
 
-    db.prepare(
+    await db.run(
       `UPDATE recommendations
        SET status = ?, result_type = ?, result_price = ?, result_percent = ?, pnl_percent = ?,
            mfe_percent = ?, mae_percent = ?, r_multiple = ?, verified_detail = ?, verified_at = ?,
            last_error = NULL, updated_at = ?
        WHERE id = ?`,
-    ).run(
-      status,
+    status,
       resultType,
       exitPrice,
       Number(resultPercent.toFixed(4)),
@@ -140,16 +139,16 @@ export async function verifyRecommendation(row) {
       row.id,
     );
 
-    addEvent(row.id, 'VERIFIED', { resultType, status, resultPercent, pnlPercent, rMultiple });
+    await addEvent(row.id, 'VERIFIED', { resultType, status, resultPercent, pnlPercent, rMultiple });
 
     if (reasons?.factors) {
-      recordFactorOutcome(row.strategy_id, row.direction, reasons.factors, { win, r: rMultiple || 0 });
+      await recordFactorOutcome(row.strategy_id, row.direction, reasons.factors, { win, r: rMultiple || 0 });
     }
 
     logger.info(
       `推荐验证 ${row.symbol} ${row.direction} → ${resultType}(${status}) 收益 ${resultPercent.toFixed(2)}% R=${rMultiple?.toFixed(2)}`,
     );
-    const updated = getRecommendation(row.id);
+    const updated = await getRecommendation(row.id);
     signalEvents.emit('verified', updated);
     return updated;
   } finally {
@@ -157,14 +156,12 @@ export async function verifyRecommendation(row) {
   }
 }
 
-function openRecommendations(limit = 50) {
-  return db
-    .prepare(`SELECT * FROM recommendations WHERE status = 'OPEN' ORDER BY expires_at ASC LIMIT ?`)
-    .all(limit);
+async function openRecommendations(limit = 50) {
+  return db.all(`SELECT * FROM recommendations WHERE status = 'OPEN' ORDER BY expires_at ASC LIMIT ?`, limit);
 }
 
 export async function runSignalVerifications() {
-  const rows = openRecommendations();
+  const rows = await openRecommendations();
   const summary = { scanned: rows.length, verified: 0, failed: 0, expired: 0 };
   for (const row of rows) {
     try {
@@ -174,13 +171,11 @@ export async function runSignalVerifications() {
       const retry = Number(row.retry_count || 0) + 1;
       summary.failed += 1;
       if (retry >= config.maxVerifyRetry) {
-        db.prepare(`UPDATE recommendations SET status = 'EXPIRED', retry_count = ?, last_error = ?, updated_at = ? WHERE id = ?`)
-          .run(retry, String(err?.message || err), nowIso(), row.id);
+        await db.run(`UPDATE recommendations SET status = 'EXPIRED', retry_count = ?, last_error = ?, updated_at = ? WHERE id = ?`, retry, String(err?.message || err), nowIso(), row.id);
         summary.expired += 1;
-        addEvent(row.id, 'EXPIRED', { reason: String(err?.message || err) });
+        await addEvent(row.id, 'EXPIRED', { reason: String(err?.message || err) });
       } else {
-        db.prepare(`UPDATE recommendations SET retry_count = ?, last_error = ?, updated_at = ? WHERE id = ?`)
-          .run(retry, String(err?.message || err), nowIso(), row.id);
+        await db.run(`UPDATE recommendations SET retry_count = ?, last_error = ?, updated_at = ? WHERE id = ?`, retry, String(err?.message || err), nowIso(), row.id);
       }
     }
   }
@@ -191,9 +186,9 @@ export async function runSignalVerifications() {
 }
 
 /** 验证完成后按冷却期与样本量触发权重自适应 */
-export function maybeAdapt(strategyId) {
+export async function maybeAdapt(strategyId) {
   try {
-    const result = adaptWeights(strategyId);
+    const result = await adaptWeights(strategyId);
     if (result.changed) {
       logger.info(
         `策略权重自适应完成 v${result.version} ${Object.keys(result.to)

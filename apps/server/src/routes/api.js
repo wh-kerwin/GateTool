@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { config, DIRECTIONS, TIMEFRAMES, TIMEFRAME_MINUTES } from '../config.js';
 import { marketService } from '../services/market.js';
+import { DEFAULT_STRATEGY_ID } from '../services/advisor/strategy.js';
+import { maybeAdapt, runSignalVerifications } from '../services/advisor/verify.js';
 import {
   cancelPrediction,
   createPrediction,
@@ -34,9 +36,25 @@ apiRouter.get('/config', (req, res) => {
   });
 });
 
-apiRouter.get('/market/tickers', (req, res) => {
-  res.json({ items: marketService.getTickers(), status: marketService.getStatus() });
-});
+apiRouter.get(
+  '/market/tickers',
+  asyncHandler(async (req, res) => {
+    // 无服务器环境下按需用 REST 补齐行情
+    await marketService.ensureFresh();
+    res.json({ items: marketService.getTickers(), status: marketService.getStatus() });
+  }),
+);
+
+/** Cron 入口：Vercel Cron 或外部定时器调用，执行一次预测 + 推荐验证 */
+const runAllVerifications = async (req, res) => {
+  const predictions = await runDueVerifications();
+  const signals = await runSignalVerifications();
+  const adapt = await maybeAdapt(DEFAULT_STRATEGY_ID);
+  res.json({ predictions, signals, adapt, at: new Date().toISOString() });
+};
+
+apiRouter.get('/cron/verify', asyncHandler(runAllVerifications));
+apiRouter.post('/cron/verify', asyncHandler(runAllVerifications));
 
 apiRouter.get(
   '/market/candles',
@@ -54,13 +72,19 @@ apiRouter.get(
   }),
 );
 
-apiRouter.get('/predictions', (req, res) => {
-  res.json(listPredictions(req.query));
-});
+apiRouter.get(
+  '/predictions',
+  asyncHandler(async (req, res) => {
+    res.json(await listPredictions(req.query));
+  }),
+);
 
-apiRouter.get('/predictions/pending', (req, res) => {
-  res.json({ items: listPending(Math.min(200, Number(req.query.limit) || 50)) });
-});
+apiRouter.get(
+  '/predictions/pending',
+  asyncHandler(async (req, res) => {
+    res.json({ items: await listPending(Math.min(200, Number(req.query.limit) || 50)) });
+  }),
+);
 
 apiRouter.post(
   '/predictions',
@@ -70,24 +94,30 @@ apiRouter.post(
   }),
 );
 
-apiRouter.get('/predictions/:id', (req, res) => {
-  const prediction = getPrediction(req.params.id);
-  if (!prediction) throw new HttpError(404, '预测不存在');
-  res.json({
-    prediction,
-    marketSnapshot: getMarketSnapshot(prediction.id),
-    verificationSnapshot: getVerificationSnapshot(prediction.id),
-  });
-});
+apiRouter.get(
+  '/predictions/:id',
+  asyncHandler(async (req, res) => {
+    const prediction = await getPrediction(req.params.id);
+    if (!prediction) throw new HttpError(404, '预测不存在');
+    res.json({
+      prediction,
+      marketSnapshot: await getMarketSnapshot(prediction.id),
+      verificationSnapshot: await getVerificationSnapshot(prediction.id),
+    });
+  }),
+);
 
-apiRouter.post('/predictions/:id/cancel', (req, res) => {
-  res.json({ prediction: cancelPrediction(req.params.id, req.body?.note || '用户作废') });
-});
+apiRouter.post(
+  '/predictions/:id/cancel',
+  asyncHandler(async (req, res) => {
+    res.json({ prediction: await cancelPrediction(req.params.id, req.body?.note || '用户作废') });
+  }),
+);
 
 apiRouter.post(
   '/predictions/:id/verify',
   asyncHandler(async (req, res) => {
-    const row = getPrediction(req.params.id);
+    const row = await getPrediction(req.params.id);
     if (!row) throw new HttpError(404, '预测不存在');
     if (row.status !== 'PENDING') throw new HttpError(409, '该预测已结束，无法重复验证');
     const updated = await verifyPrediction(row);
@@ -95,9 +125,12 @@ apiRouter.post(
   }),
 );
 
-apiRouter.get('/statistics', (req, res) => {
-  res.json(getStatistics(req.query));
-});
+apiRouter.get(
+  '/statistics',
+  asyncHandler(async (req, res) => {
+    res.json(await getStatistics(req.query));
+  }),
+);
 
 apiRouter.post(
   '/verifications/run',

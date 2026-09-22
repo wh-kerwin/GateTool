@@ -1,16 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import { config } from './config.js';
 
-fs.mkdirSync(path.dirname(config.dbPath), { recursive: true });
+/**
+ * 数据访问层：本地/自托管使用 Node 内置 SQLite；Vercel 等无服务器环境配置 DATABASE_URL 使用 Postgres。
+ * 两种驱动对外暴露同一套异步方法：get / all / run / exec
+ */
 
-export const db = new DatabaseSync(config.dbPath);
-
-db.exec(`
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
-
+const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS users (
   id          TEXT PRIMARY KEY,
   username    TEXT NOT NULL,
@@ -21,7 +18,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE TABLE IF NOT EXISTS predictions (
   id                TEXT PRIMARY KEY,
-  user_id           TEXT NOT NULL REFERENCES users(id),
+  user_id           TEXT NOT NULL,
   symbol            TEXT NOT NULL,
   direction         TEXT NOT NULL CHECK (direction IN ('LONG','SHORT','RANGE')),
   entry_price       REAL NOT NULL,
@@ -49,7 +46,7 @@ CREATE INDEX IF NOT EXISTS idx_predictions_status_time
 
 CREATE TABLE IF NOT EXISTS market_snapshots (
   id            TEXT PRIMARY KEY,
-  prediction_id TEXT NOT NULL REFERENCES predictions(id),
+  prediction_id TEXT NOT NULL,
   symbol        TEXT NOT NULL,
   price         REAL NOT NULL,
   volume        REAL,
@@ -63,7 +60,7 @@ CREATE TABLE IF NOT EXISTS market_snapshots (
 
 CREATE TABLE IF NOT EXISTS verification_snapshots (
   id            TEXT PRIMARY KEY,
-  prediction_id TEXT NOT NULL REFERENCES predictions(id),
+  prediction_id TEXT NOT NULL,
   symbol        TEXT NOT NULL,
   close         REAL NOT NULL,
   high          REAL,
@@ -129,42 +126,168 @@ CREATE INDEX IF NOT EXISTS idx_recommendations_status_time
   ON recommendations (status, expires_at);
 
 CREATE TABLE IF NOT EXISTS recommendation_events (
-  id               TEXT PRIMARY KEY,
+  id                TEXT PRIMARY KEY,
   recommendation_id TEXT NOT NULL,
-  type             TEXT NOT NULL,
-  payload          TEXT,
-  created_at       TEXT NOT NULL
+  type              TEXT NOT NULL,
+  payload           TEXT,
+  created_at        TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS signal_feedbacks (
-  id               TEXT PRIMARY KEY,
+  id                TEXT PRIMARY KEY,
   recommendation_id TEXT NOT NULL,
-  adopted          INTEGER,
-  rating           INTEGER,
-  comment          TEXT,
-  created_at       TEXT NOT NULL
+  adopted           INTEGER,
+  rating            INTEGER,
+  comment           TEXT,
+  created_at        TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS factor_stats (
-  id              TEXT PRIMARY KEY,
-  strategy_id     TEXT NOT NULL,
-  factor          TEXT NOT NULL,
-  direction       TEXT NOT NULL,
-  samples         INTEGER NOT NULL DEFAULT 0,
-  wins            INTEGER NOT NULL DEFAULT 0,
-  losses          INTEGER NOT NULL DEFAULT 0,
-  r_sum           REAL NOT NULL DEFAULT 0,
-  updated_at      TEXT NOT NULL,
+  id          TEXT PRIMARY KEY,
+  strategy_id TEXT NOT NULL,
+  factor      TEXT NOT NULL,
+  direction   TEXT NOT NULL,
+  samples     INTEGER NOT NULL DEFAULT 0,
+  wins        INTEGER NOT NULL DEFAULT 0,
+  losses      INTEGER NOT NULL DEFAULT 0,
+  r_sum       REAL NOT NULL DEFAULT 0,
+  updated_at  TEXT NOT NULL,
   UNIQUE (strategy_id, factor, direction)
 );
-`);
+`;
 
-const now = () => new Date().toISOString();
+function splitStatements(sql) {
+  return sql
+    .split(';')
+    .map((s) => s.trim())
+    .filter((s) => s && !s.startsWith('--'));
+}
 
-db.prepare(
-  `INSERT OR IGNORE INTO users (id, username, email, created_at, updated_at)
-   VALUES (?, ?, ?, ?, ?)`,
-).run(config.defaultUserId, config.defaultUsername, null, now(), now());
+const NUMERIC_OIDS = new Set([20, 21, 23, 26, 700, 701, 1700]);
+
+function createPostgresDriver(connectionString) {
+  let poolPromise = null;
+  const getPool = async () => {
+    if (!poolPromise) {
+      poolPromise = (async () => {
+        const { Pool } = await import('pg');
+        return new Pool({
+          connectionString,
+          ssl: /localhost|127\.0\.0\.1/.test(connectionString) ? undefined : { rejectUnauthorized: false },
+          max: 3,
+          idleTimeoutMillis: 10000,
+          connectionTimeoutMillis: 10000,
+        });
+      })();
+    }
+    return poolPromise;
+  };
+
+  const convert = (sql) => {
+    let i = 0;
+    return sql.replace(/\?/g, () => `$${++i}`);
+  };
+
+  const normalizeRows = (result) => {
+    const fields = result.fields || [];
+    const isNumeric = fields.map((f) => NUMERIC_OIDS.has(f.dataTypeID));
+    if (!isNumeric.some(Boolean)) return result.rows;
+    return result.rows.map((row) => {
+      const out = { ...row };
+      fields.forEach((f, i) => {
+        if (!isNumeric[i]) return;
+        const v = out[f.name];
+        if (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v)) out[f.name] = Number(v);
+      });
+      return out;
+    });
+  };
+
+  return {
+    name: 'postgres',
+    async get(sql, args = []) {
+      const pool = await getPool();
+      const res = await pool.query(convert(sql), args);
+      return normalizeRows(res)[0];
+    },
+    async all(sql, args = []) {
+      const pool = await getPool();
+      const res = await pool.query(convert(sql), args);
+      return normalizeRows(res);
+    },
+    async run(sql, args = []) {
+      const pool = await getPool();
+      const res = await pool.query(convert(sql), args);
+      return { changes: res.rowCount || 0, lastInsertRowid: res.rows?.[0]?.id ?? null };
+    },
+    async exec(sql) {
+      const pool = await getPool();
+      for (const statement of splitStatements(sql)) await pool.query(statement);
+    },
+  };
+}
+
+async function createSqliteDriver(file) {
+  const { DatabaseSync } = await import('node:sqlite');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const sqlite = new DatabaseSync(file);
+  sqlite.exec('PRAGMA journal_mode = WAL;');
+  const stmt = (sql) => sqlite.prepare(sql);
+  return {
+    name: 'sqlite',
+    async get(sql, args = []) {
+      return stmt(sql).get(...args);
+    },
+    async all(sql, args = []) {
+      return stmt(sql).all(...args);
+    },
+    async run(sql, args = []) {
+      const r = stmt(sql).run(...args);
+      return { changes: Number(r.changes ?? 0), lastInsertRowid: r.lastInsertRowid ?? null };
+    },
+    async exec(sql) {
+      for (const statement of splitStatements(sql)) sqlite.exec(statement);
+    },
+  };
+}
+
+const connectionString = process.env.DATABASE_URL || process.env.POSTGRES_URL || '';
+
+export const dbDriver = connectionString
+  ? createPostgresDriver(connectionString)
+  : await createSqliteDriver(path.resolve(config.dbPath));
+
+export const driverName = dbDriver.name;
+
+export const db = {
+  get: (sql, ...args) => dbDriver.get(sql, args),
+  all: (sql, ...args) => dbDriver.all(sql, args),
+  run: (sql, ...args) => dbDriver.run(sql, args),
+  exec: (sql) => dbDriver.exec(sql),
+};
+
+export function nowIso() {
+  return new Date().toISOString();
+}
+
+let schemaReady = null;
+
+/** 幂等建表 + 初始化默认用户（无服务器环境下每个实例首次调用时执行） */
+export function ensureSchema() {
+  if (!schemaReady) {
+    schemaReady = (async () => {
+      await db.exec(SCHEMA_SQL);
+      const ts = nowIso();
+      const sql =
+        driverName === 'postgres'
+          ? `INSERT INTO users (id, username, email, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT (id) DO NOTHING`
+          : `INSERT OR IGNORE INTO users (id, username, email, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`;
+      await db.run(sql, config.defaultUserId, config.defaultUsername, null, ts, ts);
+    })();
+  }
+  return schemaReady;
+}
 
 export function toPrediction(row) {
   if (!row) return null;
@@ -186,14 +309,10 @@ export function toPrediction(row) {
     highPrice: row.high_price,
     lowPrice: row.low_price,
     verifiedAt: row.verified_at,
-    retryCount: row.retry_count,
+    retryCount: Number(row.retry_count ?? 0),
     lastError: row.last_error,
     cancelNote: row.cancel_note,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
-}
-
-export function nowIso() {
-  return now();
 }

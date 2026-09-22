@@ -47,18 +47,25 @@ export async function verifyPrediction(row) {
     });
     const ts = nowIso();
 
-    db.prepare(
+    await db.run(
       `UPDATE predictions
        SET status = ?, result_price = ?, result_percent = ?, high_price = ?, low_price = ?,
            verified_at = ?, last_error = NULL, updated_at = ?
        WHERE id = ?`,
-    ).run(status, window.close, resultPercent, window.high, window.low, ts, ts, prediction.id);
+    status,
+      window.close,
+      resultPercent,
+      window.high,
+      window.low,
+      ts,
+      ts,
+      prediction.id,
+    );
 
-    db.prepare(
+    await db.run(
       `INSERT INTO verification_snapshots (id, prediction_id, symbol, close, high, low, source, window_from, window_to, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      newId('vsn'),
+    newId('vsn'),
       prediction.id,
       prediction.symbol,
       window.close,
@@ -70,7 +77,7 @@ export async function verifyPrediction(row) {
       ts,
     );
 
-    const updated = getPredictionById(prediction.id);
+    const updated = await getPredictionById(prediction.id);
     logger.info(
       `验证完成 ${updated.symbol} ${updated.direction} ${updated.timeframe} → ${status} (${resultPercent}%)`,
     );
@@ -81,23 +88,23 @@ export async function verifyPrediction(row) {
   }
 }
 
-function getPredictionById(id) {
-  return toPrediction(db.prepare('SELECT * FROM predictions WHERE id = ?').get(id));
+async function getPredictionById(id) {
+  return toPrediction(await db.get('SELECT * FROM predictions WHERE id = ?', id));
 }
 
-function duePredictions(limit = 100) {
-  return db
-    .prepare(
-      `SELECT * FROM predictions
+async function duePredictions(limit = 100) {
+  return db.all(
+    `SELECT * FROM predictions
        WHERE status = 'PENDING' AND verification_time <= ?
        ORDER BY verification_time ASC
        LIMIT ?`,
-    )
-    .all(new Date().toISOString(), limit);
+    new Date().toISOString(),
+    limit,
+  );
 }
 
 export async function runDueVerifications() {
-  const rows = duePredictions();
+  const rows = await duePredictions();
   if (!rows.length) return { scanned: 0, verified: 0, expired: 0, failed: 0 };
   const summary = { scanned: rows.length, verified: 0, expired: 0, failed: 0 };
 
@@ -109,16 +116,24 @@ export async function runDueVerifications() {
       const retry = Number(row.retry_count || 0) + 1;
       summary.failed += 1;
       if (retry >= config.maxVerifyRetry) {
-        db.prepare(
+        await db.run(
           `UPDATE predictions SET status = 'EXPIRED', retry_count = ?, last_error = ?, updated_at = ?
            WHERE id = ?`,
-        ).run(retry, String(err?.message || err), nowIso(), row.id);
+        retry,
+          String(err?.message || err),
+          nowIso(),
+          row.id,
+        );
         summary.expired += 1;
         logger.error(`预测 ${row.id} 验证失败已达上限，标记 EXPIRED`, String(err?.message || err));
       } else {
-        db.prepare(
+        await db.run(
           `UPDATE predictions SET retry_count = ?, last_error = ?, updated_at = ? WHERE id = ?`,
-        ).run(retry, String(err?.message || err), nowIso(), row.id);
+        retry,
+          String(err?.message || err),
+          nowIso(),
+          row.id,
+        );
         logger.warn(`预测 ${row.id} 验证失败（第 ${retry} 次）`, String(err?.message || err));
       }
     }

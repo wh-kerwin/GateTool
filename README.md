@@ -229,7 +229,49 @@ npm run smoke:advisor  # 交易辅助（BOLL/SAR、推荐生成、回放验证�
 
 ---
 
-## 6. 目录结构
+## 6. 部署到 Vercel
+
+Vercel 是无服务器环境（无常驻进程 / 无服务端 WebSocket / 文件系统不可持久化），因此做了以下适配：
+
+| 本地（长驻进程） | Vercel（Serverless） |
+| --- | --- |
+| SQLite 文件 | `DATABASE_URL` 指向 Postgres（Vercel Postgres / Neon / Supabase） |
+| 常驻调度器每 60s | Vercel Cron 每 10 分钟调用 `/api/cron/verify` |
+| 后端维持 Gate WebSocket 并广播 | 浏览器直连 Gate WebSocket（`VITE_GATE_WS_URL`），行情按需走 REST |
+| Express 监听端口 | `api/index.js` 作为 Serverless Function，`vercel.json` 把 `/api/*` 重写到它 |
+
+### 6.1 部署步骤
+
+1. **创建数据库**：Vercel 控制台 → Storage → Postgres → Create → 连接后复制 `DATABASE_URL`
+   （也可用 Neon / Supabase 的免费 Postgres，把连接串填到环境变量）
+2. **推送代码**：`git add . && git commit -m "deploy" && git push`
+3. **导入项目**：Vercel → Add New → Project → 选择该仓库（框架选 Other，构建命令会自动读 `vercel.json`）
+4. **配置环境变量**（Project → Settings → Environment Variables）：
+
+   | 变量 | 值 |
+   | --- | --- |
+   | `DATABASE_URL` | Postgres 连接串（必填） |
+   | `LLM_ENABLED` | `true`（要用 LLM 主导模式时） |
+   | `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | 你的 LLM 接口（如 `https://apihub.agnes-ai.com/v1`） |
+   | `GATE_MARKET` | `futures`（默认）或 `spot` |
+   | `SYMBOLS` | `BTC_USDT,ETH_USDT` |
+
+   > 不要提交 `.env`；前端直连 WS 的配置已写在 `apps/web/.env.production`。
+
+5. **Deploy**：构建会执行 `npm run build`（前端）+ 打包 `api/index.js` 函数
+6. **验证**：访问 `https://<你的域名>/api/health` 返回 `{"ok":true}`；首次请求会自动建表
+7. **定时任务**：`vercel.json` 中已配置每 10 分钟调用 `/api/cron/verify`（预测 + 推荐验证 + 权重自适应）。
+   Hobby 计划若未开放 Cron，可用 cron-job.org 之类的外部定时器访问同一个地址（GET 即可）
+
+### 6.2 无服务器环境下的行为差异
+
+- 页面实时价格来自浏览器直连 Gate；后端 `/api/market/tickers` 会按需用 REST 补齐
+- 验证由 Cron 触发，最长延迟 = Cron 间隔（默认 10 分钟），而非本地的 60s
+- 数据全部存 Postgres，本地 SQLite 数据不会自动迁移（可用 `pg` 手动导入）
+
+---
+
+## 7. 目录结构
 
 ```text
 gate-prediction-tracker/
@@ -245,6 +287,8 @@ gate-prediction-tracker/
 │       ├── services/       # market / prediction / verification / statistics
 │       │   └── advisor/    # strategy(权重与版本) / engine(推荐) / verify(回放验证) / llm(辅助判断)
 │   │       └── routes/         # REST API
+├── api/index.js                # Vercel Serverless 入口（所有 /api/* 重写到这里）
+├── vercel.json                 # Vercel 构建 / 重写 / Cron 配置
 │   └── web/                    # 前端（Vue3 + Vite + Arco + ECharts）
 │       └── src/
 │           ├── views/          # Dashboard / Create / Pending / History / Detail / Statistics
@@ -277,7 +321,7 @@ gate-prediction-tracker/
 
 ---
 
-## 7. 与 PRD 技术选型的差异说明
+## 8. 与 PRD 技术选型的差异说明
 
 PRD 建议 NestJS + PostgreSQL + Redis + Docker。为了做到"个人可长期维护、开箱即跑"，当前实现做了等价替换，核心逻辑（预测 → 验证 → 统计）完全一致：
 
@@ -290,7 +334,7 @@ PRD 建议 NestJS + PostgreSQL + Redis + Docker。为了做到"个人可长期�
 
 ---
 
-## 8. 常见问题
+## 9. 常见问题
 
 - **行情没有更新**：查看后端日志是否出现 `Gate WS 已连接`；未连接时系统会用 REST 每 30s 兜底刷新，页面会显示"行情未连接"。
 - **想看现货价格**：`.env` 设置 `GATE_MARKET=spot` 后重启后端。
